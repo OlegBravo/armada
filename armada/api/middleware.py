@@ -14,6 +14,8 @@
 
 import re
 
+from armada.api import HEALTH_PATH
+
 from uuid import UUID
 
 from oslo_config import cfg
@@ -79,9 +81,17 @@ class ContextMiddleware(object):
         ctx = req.context
 
         ext_marker = req.get_header('X-Context-Marker')
+        end_user = req.get_header('X-End-User')
 
         if ext_marker is not None and self.is_valid_uuid(ext_marker):
             ctx.set_external_marker(ext_marker)
+
+        # Set end user from req header in context obj if available
+        # else set the user as end user.
+        if end_user is not None:
+            ctx.set_end_user(end_user)
+        else:
+            ctx.set_end_user(ctx.user)
 
     def is_valid_uuid(self, id, version=4):
         try:
@@ -100,30 +110,56 @@ class LoggingMiddleware(object):
     # don't log any headers beginning with X-*
     hdr_exclude = re.compile('x-.*', re.IGNORECASE)
 
+    # don't log anything for health checks
+    path_exclude = re.compile('.*/{}$'.format(HEALTH_PATH))
+
+    def exclude_path(self, req):
+        return LoggingMiddleware.path_exclude.match(req.path)
+
     def process_request(self, req, resp):
         """ Set up values to be logged across the request
         """
+        if self.exclude_path(req):
+            return
+
         ctx = req.context
-        extra = {
-            'user': ctx.user,
-            'req_id': ctx.request_id,
-            'external_ctx': ctx.external_marker,
-        }
-        self.logger.info("Request %s %s" % (req.method, req.url), extra=extra)
+
+        # Get audit logging attributes from context
+        user = getattr(ctx, 'user', None)
+        req_id = getattr(ctx, 'request_id', None)
+        external_ctx = getattr(ctx, 'external_marker', None)
+        end_user = getattr(ctx, 'end_user', None)
+
+        # Log request with audit params
+        self.logger.info(
+            "user=%s request_id=%s ext_ctx=%s end_user=%s Request: %s %s %s",
+            user or '-', req_id or '-', external_ctx or '-', end_user or '-',
+            req.method, req.uri, req.query_string)
+
         self._log_headers(req.headers)
 
     def process_response(self, req, resp, resource, req_succeeded):
         """ Log the response information
         """
+        if self.exclude_path(req):
+            return
+
         ctx = req.context
-        extra = {
-            'user': ctx.user,
-            'req_id': ctx.request_id,
-            'external_ctx': ctx.external_marker,
-        }
+
+        # Get audit logging attributes from context
+        user = getattr(ctx, 'user', None)
+        req_id = getattr(ctx, 'request_id', None)
+        external_ctx = getattr(ctx, 'external_marker', None)
+        end_user = getattr(ctx, 'end_user', None)
+
         resp.append_header('X-Armada-Req', ctx.request_id)
+
+        # Log response with audit params
         self.logger.info(
-            "%s %s - %s" % (req.method, req.uri, resp.status), extra=extra)
+            "user=%s request_id=%s ext_ctx=%s end_user=%s Response: %s %s %s",
+            user or '-', req_id or '-', external_ctx or '-', end_user or '-',
+            req.method, req.uri, resp.status)
+
         self.logger.debug("Response body:%s", resp.body)
 
     def _log_headers(self, headers):

@@ -104,7 +104,7 @@ def git_clone(repo_url, ref='master', proxy_server=None, auth_method=None):
         elif 'Could not resolve proxy' in e.stderr:
             raise source_exceptions.GitProxyException(proxy_server)
         else:
-            raise source_exceptions.GitException(repo_url)
+            raise source_exceptions.GitExtenedException(repo_url , e.stderr)
     except Exception:
         LOG.exception('Encountered unknown Exception during clone.')
         raise source_exceptions.GitException(repo_url)

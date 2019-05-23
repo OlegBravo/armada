@@ -32,10 +32,10 @@ from oslo_log import log as logging
 from armada import const
 from armada.exceptions import tiller_exceptions as ex
 from armada.handlers.k8s import K8s
-from armada.handlers import test
+from armada.utils import helm
 from armada.utils.release import label_selectors, get_release_status
 
-TILLER_VERSION = b'2.10.0'
+TILLER_VERSION = b'2.13.1'
 GRPC_EPSILON = 60
 LIST_RELEASES_PAGE_SIZE = 32
 LIST_RELEASES_ATTEMPTS = 3
@@ -80,14 +80,16 @@ class Tiller(object):
                  tiller_host=None,
                  tiller_port=None,
                  tiller_namespace=None,
+                 bearer_token=None,
                  dry_run=None):
-        self.tiller_host = tiller_host
+        self.tiller_host = tiller_host or CONF.tiller_host
         self.tiller_port = tiller_port or CONF.tiller_port
         self.tiller_namespace = tiller_namespace or CONF.tiller_namespace
+        self.bearer_token = bearer_token
         self.dry_run = dry_run or False
 
         # init k8s connectivity
-        self.k8s = K8s()
+        self.k8s = K8s(bearer_token=self.bearer_token)
 
         # init Tiller channel
         self.channel = self.get_channel()
@@ -312,7 +314,7 @@ class Tiller(object):
                     name, release_name, namespace, labels, action_type, chart,
                     disable_hooks, values, timeout)
         except Exception:
-            LOG.excpetion(
+            LOG.exception(
                 "Pre-action failure: could not perform rolling upgrade for "
                 "%(res_type)s %(res_name)s.", {
                     'res_type': action_type,
@@ -329,7 +331,7 @@ class Tiller(object):
                 self.delete_resources(
                     action_type, labels, namespace, timeout=timeout)
         except Exception:
-            LOG.excpetion(
+            LOG.exception(
                 "Pre-action failure: could not delete %(res_type)s "
                 "%(res_name)s.", {
                     'res_type': action_type,
@@ -502,7 +504,7 @@ class Tiller(object):
 
             failed = 0
             for test_message in test_message_stream:
-                if test_message.status == test.TESTRUN_STATUS_FAILURE:
+                if test_message.status == helm.TESTRUN_STATUS_FAILURE:
                     failed += 1
                 LOG.info(test_message.msg)
             if failed:
@@ -580,13 +582,21 @@ class Tiller(object):
             LOG.exception('Failed to get Tiller version.')
             raise ex.TillerVersionException()
 
-    def uninstall_release(self, release, disable_hooks=False, purge=True):
+    def uninstall_release(self,
+                          release,
+                          disable_hooks=False,
+                          purge=True,
+                          timeout=None):
         '''
         :param: release - Helm chart release name
         :param: purge - deep delete of chart
+        :param: timeout - timeout for the tiller call
 
         Deletes a Helm chart from Tiller
         '''
+
+        if timeout is None:
+            timeout = const.DEFAULT_DELETE_TIMEOUT
 
         # Helm client calls ReleaseContent in Delete dry-run scenario
         if self.dry_run:
@@ -601,16 +611,17 @@ class Tiller(object):
         try:
             stub = ReleaseServiceStub(self.channel)
             LOG.info(
-                "Uninstall %s release with disable_hooks=%s, "
-                "purge=%s flags", release, disable_hooks, purge)
+                "Delete %s release with disable_hooks=%s, "
+                "purge=%s, timeout=%s flags", release, disable_hooks, purge,
+                timeout)
             release_request = UninstallReleaseRequest(
                 name=release, disable_hooks=disable_hooks, purge=purge)
 
             return stub.UninstallRelease(
-                release_request, self.timeout, metadata=self.metadata)
+                release_request, timeout, metadata=self.metadata)
 
         except Exception:
-            LOG.exception('Error while uninstalling release %s', release)
+            LOG.exception('Error while deleting release %s', release)
             status = self.get_release_status(release)
             raise ex.ReleaseException(release, status, 'Delete')
 

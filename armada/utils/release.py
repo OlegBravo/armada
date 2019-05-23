@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from armada.handlers.test import get_test_suite_run_success
+from armada.utils.helm import get_test_suite_run_success
+
+import time
 
 
 def release_prefixer(prefix, release):
@@ -53,3 +55,17 @@ def get_last_test_result(release):
     if not status.HasField('last_test_suite_run'):
         return None
     return get_test_suite_run_success(status.last_test_suite_run)
+
+
+def get_last_deployment_age(release):
+    """
+    :param release: protobuf release object
+
+    :return: age in seconds of last deployment of release
+    """
+
+    last_deployed = release.info.last_deployed.seconds
+    now = int(time.time())
+    last_deployment_age = now - last_deployed
+
+    return last_deployment_age

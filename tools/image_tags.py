@@ -1,4 +1,4 @@
-#!/bin/python
+#!/usr/bin/python3
 # Copyright 2018 AT&T Intellectual Property.  All other rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +20,7 @@ import sys
 
 LOG = logging.getLogger(__name__)
 
-LOG_FORMAT = '%(asctime)s %(levelname)-8s %(name)s:%(funcName)s [%(lineno)3d] %(message)s'  # noqa
+LOG_FORMAT = '%(asctime)s %(levelname)-8s %(name)s:%(filename)s:%(lineno)3d:%(funcName)s %(message)s'  # noqa
 
 
 class TagGenExeception(Exception):

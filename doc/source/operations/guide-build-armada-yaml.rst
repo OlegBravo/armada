@@ -110,6 +110,8 @@ Chart
 +-----------------+----------+---------------------------------------------------------------------------------------+
 | upgrade         | object   | upgrade the chart managed by the armada yaml                                          |
 +-----------------+----------+---------------------------------------------------------------------------------------+
+| delete          | object   | See Delete_.                                                                          |
++-----------------+----------+---------------------------------------------------------------------------------------+
 | values          | object   | override any default values in the charts                                             |
 +-----------------+----------+---------------------------------------------------------------------------------------+
 | source          | object   | provide a path to a ``git repo``, ``local dir``, or ``tarball url`` chart             |
@@ -172,6 +174,8 @@ Run helm tests on the chart after install/upgrade.
 +=============+==========+====================================================================+
 | enabled     | bool     | whether to enable/disable helm tests for this chart (default True) |
 +-------------+----------+--------------------------------------------------------------------+
+| timeout     | int      | time (in sec) to wait for completion of Helm tests                 |
++-------------+----------+--------------------------------------------------------------------+
 | options     | object   | See `Test Options`_.                                               |
 +-------------+----------+--------------------------------------------------------------------+
 
@@ -203,10 +207,15 @@ Test options to pass through directly to helm.
 
 .. note::
 
-    The preferred way to achieve test cleanup is to add a pre-upgrade delete
-    action on the test pod, which allows for debugging the test pod up until the
-    next upgrade.
+    If cleanup is ``true`` this prevents being able to debug a test in the event of failure.
 
+    Historically, the preferred way to achieve test cleanup has been to add a pre-upgrade delete
+    action on the test pod.
+
+    This still works, however it is usually no longer necessary as Armada now automatically
+    cleans up any test pods which match the ``wait.labels`` of the chart, immediately before
+    running tests. Similar suggestions have been made for how ``helm test --cleanup`` itself
+    ought to work (https://github.com/helm/helm/issues/3279).
 
 Upgrade - Pre
 ^^^^^^^^^^^^^
@@ -296,6 +305,14 @@ Chart Example
         reference: master
       dependencies: []
 
+Delete
+^^^^^^
+
++-------------+----------+-----------------------------------------------------------------------------------+
+| keyword     | type     | action                                                                            |
++=============+==========+===================================================================================+
+| timeout     | integer  | time (in seconds) to wait for chart to be deleted                                 |
++-------------+----------+-----------------------------------------------------------------------------------+
 
 Source
 ^^^^^^

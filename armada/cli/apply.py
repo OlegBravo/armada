@@ -21,6 +21,7 @@ from armada.cli import CliAction
 from armada.exceptions.source_exceptions import InvalidPathException
 from armada.handlers.armada import Armada
 from armada.handlers.document import ReferenceResolver
+from armada.handlers.lock import lock_and_thread
 from armada.handlers.tiller import Tiller
 
 CONF = cfg.CONF
@@ -95,16 +96,13 @@ SHORT_DESC = "Command installs manifest charts."
     default=[])
 @click.option('--tiller-host', help="Tiller host IP.", default=None)
 @click.option(
-    '--tiller-port',
-    help="Tiller host port.",
-    type=int,
-    default=CONF.tiller_port)
+    '--tiller-port', help="Tiller host port.", type=int, default=None)
 @click.option(
     '--tiller-namespace',
     '-tn',
     help="Tiller namespace.",
     type=str,
-    default=CONF.tiller_namespace)
+    default=None)
 @click.option(
     '--timeout',
     help="Specifies time to wait for each chart to fully "
@@ -129,17 +127,18 @@ SHORT_DESC = "Command installs manifest charts."
     help=("The target manifest to run. Required for specifying "
           "which manifest to run when multiple are available."),
     default=None)
+@click.option('--bearer-token', help="User Bearer token", default=None)
 @click.option('--debug', help="Enable debug logging.", is_flag=True)
 @click.pass_context
 def apply_create(ctx, locations, api, disable_update_post, disable_update_pre,
                  dry_run, enable_chart_cleanup, use_doc_ref, set, tiller_host,
                  tiller_port, tiller_namespace, timeout, values, wait,
-                 target_manifest, debug):
+                 target_manifest, bearer_token, debug):
     CONF.debug = debug
     ApplyManifest(ctx, locations, api, disable_update_post, disable_update_pre,
                   dry_run, enable_chart_cleanup, use_doc_ref, set, tiller_host,
                   tiller_port, tiller_namespace, timeout, values, wait,
-                  target_manifest).safe_invoke()
+                  target_manifest, bearer_token).safe_invoke()
 
 
 class ApplyManifest(CliAction):
@@ -147,7 +146,7 @@ class ApplyManifest(CliAction):
     def __init__(self, ctx, locations, api, disable_update_post,
                  disable_update_pre, dry_run, enable_chart_cleanup,
                  use_doc_ref, set, tiller_host, tiller_port, tiller_namespace,
-                 timeout, values, wait, target_manifest):
+                 timeout, values, wait, target_manifest, bearer_token):
         super(ApplyManifest, self).__init__()
         self.ctx = ctx
         # Filename can also be a URL reference
@@ -166,6 +165,7 @@ class ApplyManifest(CliAction):
         self.values = values
         self.wait = wait
         self.target_manifest = target_manifest
+        self.bearer_token = bearer_token
 
     def output(self, resp):
         for result in resp:
@@ -203,21 +203,10 @@ class ApplyManifest(CliAction):
                     tiller_host=self.tiller_host,
                     tiller_port=self.tiller_port,
                     tiller_namespace=self.tiller_namespace,
+                    bearer_token=self.bearer_token,
                     dry_run=self.dry_run) as tiller:
-                armada = Armada(
-                    documents,
-                    disable_update_pre=self.disable_update_pre,
-                    disable_update_post=self.disable_update_post,
-                    enable_chart_cleanup=self.enable_chart_cleanup,
-                    dry_run=self.dry_run,
-                    set_ovr=self.set,
-                    force_wait=self.wait,
-                    timeout=self.timeout,
-                    tiller=tiller,
-                    values=self.values,
-                    target_manifest=self.target_manifest)
 
-                resp = armada.sync()
+                resp = self.handle(documents, tiller)
                 self.output(resp)
         else:
             if len(self.values) > 0:
@@ -245,3 +234,19 @@ class ApplyManifest(CliAction):
                 resp = client.post_apply(
                     manifest=documents, set=self.set, query=query)
             self.output(resp.get('message'))
+
+    @lock_and_thread()
+    def handle(self, documents, tiller):
+        armada = Armada(
+            documents,
+            disable_update_pre=self.disable_update_pre,
+            disable_update_post=self.disable_update_post,
+            enable_chart_cleanup=self.enable_chart_cleanup,
+            dry_run=self.dry_run,
+            set_ovr=self.set,
+            force_wait=self.wait,
+            timeout=self.timeout,
+            tiller=tiller,
+            values=self.values,
+            target_manifest=self.target_manifest)
+        return armada.sync()

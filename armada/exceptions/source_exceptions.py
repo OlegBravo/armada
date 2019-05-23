@@ -36,6 +36,18 @@ class GitException(SourceException):
 
         super(GitException, self).__init__(self._message)
 
+class GitExtenedException(SourceException):
+    '''
+    Exception when an error occurs on cloning extened
+    '''
+
+    def __init__(self, location , error):
+        self._location = location
+        self._message = ('Git exception occurred, [', self._location,
+                         '] may not be a valid git repository : ' + error )
+
+        super(GitException, self).__init__(self._message)
+
 
 class GitAuthException(SourceException):
     '''Exception that occurs when authentication fails for cloning a repo.'''

@@ -19,6 +19,8 @@ from oslo_config import cfg
 
 from armada.cli import CliAction
 from armada import const
+from armada.handlers.chart_delete import ChartDelete
+from armada.handlers.lock import lock_and_thread
 from armada.handlers.manifest import Manifest
 from armada.handlers.tiller import Tiller
 from armada.utils.release import release_prefixer
@@ -62,22 +64,23 @@ SHORT_DESC = "Command deletes releases."
     '--releases', help="Comma-separated list of release names.", type=str)
 @click.option(
     '--no-purge', help="Deletes release without purge option.", is_flag=True)
-@click.option('--tiller-host', help="Tiller host IP.")
+@click.option('--tiller-host', help="Tiller host IP.", default=None)
 @click.option(
-    '--tiller-port', help="Tiller host port.", type=int, default=44134)
+    '--tiller-port', help="Tiller host port.", type=int, default=None)
+@click.option('--bearer-token', help="User Bearer token.", default=None)
 @click.option('--debug', help="Enable debug logging.", is_flag=True)
 @click.pass_context
 def delete_charts(ctx, manifest, releases, no_purge, tiller_host, tiller_port,
-                  debug):
+                  bearer_token, debug):
     CONF.debug = debug
     DeleteChartManifest(ctx, manifest, releases, no_purge, tiller_host,
-                        tiller_port).safe_invoke()
+                        tiller_port, bearer_token).safe_invoke()
 
 
 class DeleteChartManifest(CliAction):
 
     def __init__(self, ctx, manifest, releases, no_purge, tiller_host,
-                 tiller_port):
+                 tiller_port, bearer_token):
 
         super(DeleteChartManifest, self).__init__()
         self.ctx = ctx
@@ -86,13 +89,16 @@ class DeleteChartManifest(CliAction):
         self.purge = not no_purge
         self.tiller_host = tiller_host
         self.tiller_port = tiller_port
+        self.bearer_token = bearer_token
 
     def invoke(self):
         with Tiller(
                 tiller_host=self.tiller_host,
-                tiller_port=self.tiller_port) as tiller:
+                tiller_port=self.tiller_port,
+                bearer_token=self.bearer_token) as tiller:
             self.handle(tiller)
 
+    @lock_and_thread()
     def handle(self, tiller):
         known_release_names = [release[0] for release in tiller.list_charts()]
 
@@ -108,13 +114,13 @@ class DeleteChartManifest(CliAction):
             if not self.ctx.obj.get('api', False):
                 for r in target_releases:
                     self.logger.info("Deleting release %s", r)
-                    tiller.uninstall_release(r, purge=self.purge)
+                    tiller.delete_release(r, purge=self.purge)
 
             else:
                 raise NotImplementedError()
 
         if self.manifest:
-            target_releases = []
+            target_deletes = []
 
             with open(self.manifest) as f:
                 documents = list(yaml.safe_load_all(f.read()))
@@ -126,11 +132,11 @@ class DeleteChartManifest(CliAction):
                 for group in armada_obj.get(const.KEYWORD_ARMADA).get(
                         const.KEYWORD_GROUPS):
                     for ch in group.get(const.KEYWORD_CHARTS):
+                        chart = ch.get('chart')
                         release_name = release_prefixer(
-                            prefix,
-                            ch.get('chart').get('release'))
+                            prefix, chart.get('release'))
                         if release_name in known_release_names:
-                            target_releases.append(release_name)
+                            target_deletes.append((chart, release_name))
             except yaml.YAMLError as e:
                 mark = e.problem_mark
                 self.logger.info(
@@ -138,14 +144,15 @@ class DeleteChartManifest(CliAction):
                     "Error position: (%s:%s)", e.problem, mark.line + 1,
                     mark.column + 1)
 
-            if not target_releases:
+            if not target_deletes:
                 self.logger.info("There's no release to delete.")
                 return
 
             if not self.ctx.obj.get('api', False):
-                for r in target_releases:
-                    self.logger.info("Deleting release %s", r)
-                    tiller.uninstall_release(r, purge=self.purge)
+                for chart, release in target_deletes:
+                    chart_delete = ChartDelete(
+                        chart, release, tiller, purge=self.purge)
+                    chart_delete.delete()
 
             else:
                 raise NotImplementedError()

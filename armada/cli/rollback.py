@@ -16,6 +16,7 @@ import click
 from oslo_config import cfg
 
 from armada.cli import CliAction
+from armada.handlers.lock import lock_and_thread
 from armada.handlers.tiller import Tiller
 
 CONF = cfg.CONF
@@ -52,16 +53,13 @@ SHORT_DESC = "Command performs a release rollback."
 @click.option('--dry-run', help="Perform a dry-run rollback.", is_flag=True)
 @click.option('--tiller-host', help="Tiller host IP.", default=None)
 @click.option(
-    '--tiller-port',
-    help="Tiller host port.",
-    type=int,
-    default=CONF.tiller_port)
+    '--tiller-port', help="Tiller host port.", type=int, default=None)
 @click.option(
     '--tiller-namespace',
     '-tn',
     help="Tiller namespace.",
     type=str,
-    default=CONF.tiller_namespace)
+    default=None)
 @click.option(
     '--timeout',
     help="Specifies time to wait for rollback to complete.",
@@ -80,22 +78,23 @@ SHORT_DESC = "Command performs a release rollback."
     '--recreate-pods',
     help=("Restarts pods for the resource if applicable."),
     is_flag=True)
+@click.option('--bearer-token', help=("User bearer token."), default=None)
 @click.option('--debug', help="Enable debug logging.", is_flag=True)
 @click.pass_context
 def rollback_charts(ctx, release, version, dry_run, tiller_host, tiller_port,
                     tiller_namespace, timeout, wait, force, recreate_pods,
-                    debug):
+                    bearer_token, debug):
     CONF.debug = debug
     Rollback(ctx, release, version, dry_run, tiller_host, tiller_port,
-             tiller_namespace, timeout, wait, force,
-             recreate_pods).safe_invoke()
+             tiller_namespace, timeout, wait, force, recreate_pods,
+             bearer_token).safe_invoke()
 
 
 class Rollback(CliAction):
 
     def __init__(self, ctx, release, version, dry_run, tiller_host,
                  tiller_port, tiller_namespace, timeout, wait, force,
-                 recreate_pods):
+                 recreate_pods, bearer_token):
         super(Rollback, self).__init__()
         self.ctx = ctx
         self.release = release
@@ -108,23 +107,29 @@ class Rollback(CliAction):
         self.wait = wait
         self.force = force
         self.recreate_pods = recreate_pods
+        self.bearer_token = bearer_token
 
     def invoke(self):
         with Tiller(
                 tiller_host=self.tiller_host,
                 tiller_port=self.tiller_port,
                 tiller_namespace=self.tiller_namespace,
+                bearer_token=self.bearer_token,
                 dry_run=self.dry_run) as tiller:
 
-            response = tiller.rollback_release(
-                self.release,
-                self.version,
-                wait=self.wait,
-                timeout=self.timeout,
-                force=self.force,
-                recreate_pods=self.recreate_pods)
+            response = self.handle(tiller)
 
             self.output(response)
+
+    @lock_and_thread()
+    def handle(self, tiller):
+        return tiller.rollback_release(
+            self.release,
+            self.version,
+            wait=self.wait,
+            timeout=self.timeout,
+            force=self.force,
+            recreate_pods=self.recreate_pods)
 
     def output(self, response):
         self.logger.info(('(dry run) ' if self.dry_run else '') +

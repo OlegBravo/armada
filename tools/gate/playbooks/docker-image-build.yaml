@@ -28,12 +28,12 @@
             msg: "{{ tags | to_json }}"
 
     - name: Determine tags
-      shell: echo '{{ tags | to_json }}' | python {{ zuul.project.src_dir }}/tools/image_tags.py
+      shell: echo '{{ tags | to_json }}' | python3 {{ zuul.project.src_dir }}/tools/image_tags.py
       environment:
-        BRANCH: "{{ zuul.branch }}"
-        CHANGE: "{{ zuul.change }}"
-        COMMIT: "{{ zuul.newrev }}"
-        PATCHSET: "{{ zuul.patchset }}"
+        BRANCH: "{{ zuul.branch | default('') }}"
+        CHANGE: "{{ zuul.change | default('') }}"
+        COMMIT: "{{ zuul.newrev | default('') }}"
+        PATCHSET: "{{ zuul.patchset | default('') }}"
       register: image_tags
 
     - name: Debug computed tags
@@ -116,7 +116,7 @@
               DOCKER_REGISTRY: "quay.io"
               IMAGE_PREFIX: "airshipit"
               IMAGE_TAG: "{{ item }}"
-              COMMIT: "{{ zuul.newrev }}"
+              COMMIT: "{{ zuul.newrev | default('') }}"
               PUSH_IMAGE: "true"
           with_items: "{{ image_tags.stdout_lines }}"
 

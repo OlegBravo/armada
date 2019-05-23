@@ -21,6 +21,7 @@ import time
 from oslo_log import log as logging
 
 from armada import const
+from armada.utils.helm import is_test_pod
 from armada.utils.release import label_selectors
 from armada.exceptions import k8s_exceptions
 from armada.exceptions import manifest_exceptions
@@ -30,6 +31,11 @@ from kubernetes import watch
 LOG = logging.getLogger(__name__)
 
 ROLLING_UPDATE_STRATEGY_TYPE = 'RollingUpdate'
+
+
+def get_wait_labels(chart):
+    wait_config = chart.get('wait', {})
+    return wait_config.get('labels', {})
 
 
 # TODO: Validate this object up front in armada validate flow.
@@ -46,7 +52,7 @@ class ChartWait():
         self.k8s_wait_attempt_sleep = max(k8s_wait_attempt_sleep, 1)
 
         resources = self.wait_config.get('resources')
-        labels = self.wait_config.get('labels', {})
+        labels = get_wait_labels(self.chart)
 
         if resources is not None:
             waits = []
@@ -148,15 +154,23 @@ class ResourceWait(ABC):
         '''
         pass
 
-    def include_resource(self, resource):
+    def get_exclude_reason(self, resource):
         '''
-        Test to include or exclude a resource in a wait operation. This method
-        can be used to exclude resources that should not be included in wait
-        operations (e.g. test pods).
+        If a resource should be excluded from the wait, returns a message
+        to explain why. Unless overridden, all resources are included.
         :param resource: resource to test
-        :returns: boolean representing test result
+        :returns: string representing exclude reason
         '''
-        return True
+        return None
+
+    def include_resource(self, resource):
+        exclude_reason = self.get_exclude_reason(resource)
+
+        if exclude_reason:
+            LOG.debug('Excluding %s %s from wait: %s', self.resource_type,
+                      resource.metadata.name, exclude_reason)
+
+        return not exclude_reason
 
     def handle_resource(self, resource):
         resource_name = resource.metadata.name
@@ -210,22 +224,23 @@ class ResourceWait(ABC):
 
             timed_out, modified, unready, found_resources = (
                 self._watch_resource_completions(timeout=deadline_remaining))
-            if not found_resources:
-                if self.skip_if_none_found:
-                    return
-                else:
-                    LOG.warn(
-                        'Saw no resources for '
-                        'resource type=%s, namespace=%s, labels=(%s). Are the '
-                        'labels correct?', self.resource_type,
-                        self.chart_wait.namespace, self.label_selector)
 
-            # TODO(seaneagan): Should probably fail here even when resources
-            # were not found, at least once we have an option to ignore
-            # wait timeouts.
-            if timed_out and found_resources:
-                error = "Timed out waiting for resources={}".format(
-                    sorted(unready))
+            if (not found_resources) and self.skip_if_none_found:
+                return
+
+            if timed_out:
+                if not found_resources:
+                    details = (
+                        'None found! Are `wait.labels` correct? Does '
+                        '`wait.resources` need to exclude `type: {}`?'.format(
+                            self.resource_type))
+                else:
+                    details = ('These {}s were not ready={}'.format(
+                        self.resource_type, sorted(unready)))
+                error = (
+                    'Timed out waiting for {}s (namespace={}, labels=({})). {}'
+                    .format(self.resource_type, self.chart_wait.namespace,
+                            self.label_selector, details))
                 LOG.error(error)
                 raise k8s_exceptions.KubernetesWatchTimeoutException(error)
 
@@ -347,27 +362,21 @@ class PodWait(ResourceWait):
             resource_type, chart_wait, labels,
             chart_wait.k8s.client.list_namespaced_pod, **kwargs)
 
-    def include_resource(self, resource):
+    def get_exclude_reason(self, resource):
         pod = resource
-        annotations = pod.metadata.annotations
 
-        # Retrieve pod's Helm test hooks
-        test_hooks = None
-        if annotations:
-            hook_string = annotations.get(const.HELM_HOOK_ANNOTATION)
-            if hook_string:
-                hooks = hook_string.split(',')
-                test_hooks = [h for h in hooks if h in const.HELM_TEST_HOOKS]
+        # Exclude helm test pods
+        # TODO: Possibly exclude other helm hook pods/jobs (besides tests)?
+        if is_test_pod(pod):
+            return 'helm test pod'
 
-        # NOTE(drewwalters96): Test pods may cause wait operations to fail
-        # when old resources remain from previous upgrades/tests. Indicate that
-        # test pods should not be included in wait operations.
-        if test_hooks:
-            LOG.debug('Pod %s will be skipped during wait operations.',
-                      pod.metadata.name)
-            return False
-        else:
-            return True
+        # Exclude job pods
+        # TODO: Once controller-based waits are enabled by default, ignore
+        # controller-owned pods as well.
+        if has_owner(pod, 'Job'):
+            return 'generated by job (wait on that instead if not already)'
+
+        return None
 
     def is_resource_ready(self, resource):
         pod = resource
@@ -395,6 +404,15 @@ class JobWait(ResourceWait):
             resource_type, chart_wait, labels,
             chart_wait.k8s.batch_api.list_namespaced_job, **kwargs)
 
+    def get_exclude_reason(self, resource):
+        job = resource
+
+        # Exclude cronjob jobs
+        if has_owner(job, 'CronJob'):
+            return 'generated by cronjob (not part of release)'
+
+        return None
+
     def is_resource_ready(self, resource):
         job = resource
         name = job.metadata.name
@@ -407,6 +425,16 @@ class JobWait(ResourceWait):
             return (msg.format(name), False)
         msg = "job {} successfully completed"
         return (msg.format(name), True)
+
+
+def has_owner(resource, kind=None):
+    owner_references = resource.metadata.owner_references or []
+
+    for owner in owner_references:
+        if not kind or kind == owner.kind:
+            return True
+
+    return False
 
 
 CountOrPercent = collections.namedtuple('CountOrPercent',
@@ -466,32 +494,34 @@ class DeploymentWait(ControllerWait):
         spec = deployment.spec
         status = deployment.status
 
-        if deployment.metadata.generation <= status.observed_generation:
+        gen = deployment.metadata.generation or 0
+        observed_gen = status.observed_generation or 0
+        if gen <= observed_gen:
             cond = self._get_resource_condition(status.conditions,
                                                 'Progressing')
-            if cond and cond.reason == 'ProgressDeadlineExceeded':
+            if cond and (cond.reason or '') == 'ProgressDeadlineExceeded':
                 msg = "deployment {} exceeded its progress deadline"
-                return ("", False, msg.format(name))
+                return (msg.format(name), False)
 
-            if spec.replicas and status.updated_replicas < spec.replicas:
+            replicas = spec.replicas or 0
+            updated_replicas = status.updated_replicas or 0
+            available_replicas = status.available_replicas or 0
+            if updated_replicas < replicas:
                 msg = ("Waiting for deployment {} rollout to finish: {} out "
                        "of {} new replicas have been updated...")
-                return (msg.format(name, status.updated_replicas,
-                                   spec.replicas), False)
+                return (msg.format(name, updated_replicas, replicas), False)
 
-            if status.replicas > status.updated_replicas:
+            if replicas > updated_replicas:
                 msg = ("Waiting for deployment {} rollout to finish: {} old "
                        "replicas are pending termination...")
-                pending = status.replicas - status.updated_replicas
+                pending = replicas - updated_replicas
                 return (msg.format(name, pending), False)
 
-            if not self._is_min_ready(status.available_replicas,
-                                      status.updated_replicas):
+            if not self._is_min_ready(available_replicas, updated_replicas):
                 msg = ("Waiting for deployment {} rollout to finish: {} of {} "
                        "updated replicas are available, with min_ready={}")
-                return (msg.format(name, status.available_replicas,
-                                   status.updated_replicas,
-                                   self.min_ready.source), False, None)
+                return (msg.format(name, available_replicas, updated_replicas,
+                                   self.min_ready.source), False)
             msg = "deployment {} successfully rolled out\n"
             return (msg.format(name), True)
 
@@ -519,20 +549,24 @@ class DaemonSetWait(ControllerWait):
                 msg.format(spec.update_strategy.type,
                            ROLLING_UPDATE_STRATEGY_TYPE))
 
-        if daemon.metadata.generation <= status.observed_generation:
-            if (status.updated_number_scheduled <
-                    status.desired_number_scheduled):
+        gen = daemon.metadata.generation or 0
+        observed_gen = status.observed_generation or 0
+        updated_number_scheduled = status.updated_number_scheduled or 0
+        desired_number_scheduled = status.desired_number_scheduled or 0
+        number_available = status.number_available or 0
+        if gen <= observed_gen:
+            if (updated_number_scheduled < desired_number_scheduled):
                 msg = ("Waiting for daemon set {} rollout to finish: {} out "
                        "of {} new pods have been updated...")
-                return (msg.format(name, status.updated_number_scheduled,
-                                   status.desired_number_scheduled), False)
+                return (msg.format(name, updated_number_scheduled,
+                                   desired_number_scheduled), False)
 
-            if not self._is_min_ready(status.number_available,
-                                      status.desired_number_scheduled):
+            if not self._is_min_ready(number_available,
+                                      desired_number_scheduled):
                 msg = ("Waiting for daemon set {} rollout to finish: {} of {} "
                        "updated pods are available, with min_ready={}")
-                return (msg.format(name, status.number_available,
-                                   status.desired_number_scheduled,
+                return (msg.format(name, number_available,
+                                   desired_number_scheduled,
                                    self.min_ready.source), False)
 
             msg = "daemon set {} successfully rolled out"
@@ -555,39 +589,45 @@ class StatefulSetWait(ControllerWait):
         spec = sts.spec
         status = sts.status
 
-        if spec.update_strategy.type != ROLLING_UPDATE_STRATEGY_TYPE:
+        update_strategy_type = spec.update_strategy.type or ''
+        if update_strategy_type != ROLLING_UPDATE_STRATEGY_TYPE:
             msg = ("Assuming non-readiness for strategy type {}, can only "
                    "determine for {}")
 
             raise armada_exceptions.WaitException(
-                msg.format(spec.update_strategy.type,
-                           ROLLING_UPDATE_STRATEGY_TYPE))
+                msg.format(update_strategy_type, ROLLING_UPDATE_STRATEGY_TYPE))
 
-        if (status.observed_generation == 0 or
-                sts.metadata.generation > status.observed_generation):
+        gen = sts.metadata.generation or 0
+        observed_gen = status.observed_generation or 0
+        if (observed_gen == 0 or gen > observed_gen):
             msg = "Waiting for statefulset spec update to be observed..."
             return (msg, False)
 
-        if spec.replicas and not self._is_min_ready(status.ready_replicas,
-                                                    spec.replicas):
+        replicas = spec.replicas or 0
+        ready_replicas = status.ready_replicas or 0
+        updated_replicas = status.updated_replicas or 0
+        current_replicas = status.current_replicas or 0
+
+        if replicas and not self._is_min_ready(ready_replicas, replicas):
             msg = ("Waiting for statefulset {} rollout to finish: {} of {} "
                    "pods are ready, with min_ready={}")
-            return (msg.format(name, status.ready_replicas, spec.replicas,
+            return (msg.format(name, ready_replicas, replicas,
                                self.min_ready.source), False)
 
-        if (spec.update_strategy.type == ROLLING_UPDATE_STRATEGY_TYPE and
+        if (update_strategy_type == ROLLING_UPDATE_STRATEGY_TYPE and
                 spec.update_strategy.rolling_update):
-            if spec.replicas and spec.update_strategy.rolling_update.partition:
+            if replicas and spec.update_strategy.rolling_update.partition:
                 msg = ("Waiting on partitioned rollout not supported, "
                        "assuming non-readiness of statefulset {}")
                 return (msg.format(name), False)
 
-        if status.update_revision != status.current_revision:
+        update_revision = status.update_revision or 0
+        current_revision = status.current_revision or 0
+
+        if update_revision != current_revision:
             msg = ("waiting for statefulset rolling update to complete {} "
                    "pods at revision {}...")
-            return (msg.format(status.updated_replicas,
-                               status.update_revision), False)
+            return (msg.format(updated_replicas, update_revision), False)
 
         msg = "statefulset rolling update complete {} pods at revision {}..."
-        return (msg.format(status.current_replicas, status.current_revision),
-                True)
+        return (msg.format(current_replicas, current_revision), True)

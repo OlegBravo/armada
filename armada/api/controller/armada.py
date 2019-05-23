@@ -22,6 +22,7 @@ from armada.common import policy
 from armada import exceptions
 from armada.handlers.armada import Armada
 from armada.handlers.document import ReferenceResolver
+from armada.handlers.lock import lock_and_thread, LockException
 from armada.handlers.override import Override
 
 
@@ -69,33 +70,34 @@ class Apply(api.BaseResource):
                 "or application/json")
         try:
             with self.get_tiller(req, resp) as tiller:
-
-                armada = Armada(
-                    documents,
-                    disable_update_pre=req.get_param_as_bool(
-                        'disable_update_pre'),
-                    disable_update_post=req.get_param_as_bool(
-                        'disable_update_post'),
-                    enable_chart_cleanup=req.get_param_as_bool(
-                        'enable_chart_cleanup'),
-                    dry_run=req.get_param_as_bool('dry_run'),
-                    force_wait=req.get_param_as_bool('wait'),
-                    timeout=req.get_param_as_int('timeout'),
-                    tiller=tiller,
-                    target_manifest=req.get_param('target_manifest'))
-
-                msg = armada.sync()
-
+                msg = self.handle(req, documents, tiller)
                 resp.body = json.dumps({
                     'message': msg,
                 })
-
                 resp.content_type = 'application/json'
                 resp.status = falcon.HTTP_200
+
         except exceptions.ManifestException as e:
             self.return_error(resp, falcon.HTTP_400, message=str(e))
+        except LockException as e:
+            self.return_error(resp, falcon.HTTP_409, message=str(e))
         except Exception as e:
             self.logger.exception('Caught unexpected exception')
             err_message = 'Failed to apply manifest: {}'.format(e)
             self.error(req.context, err_message)
             self.return_error(resp, falcon.HTTP_500, message=err_message)
+
+    @lock_and_thread()
+    def handle(self, req, documents, tiller):
+        armada = Armada(
+            documents,
+            disable_update_pre=req.get_param_as_bool('disable_update_pre'),
+            disable_update_post=req.get_param_as_bool('disable_update_post'),
+            enable_chart_cleanup=req.get_param_as_bool('enable_chart_cleanup'),
+            dry_run=req.get_param_as_bool('dry_run'),
+            force_wait=req.get_param_as_bool('wait'),
+            timeout=req.get_param_as_int('timeout'),
+            tiller=tiller,
+            target_manifest=req.get_param('target_manifest'))
+
+        return armada.sync()

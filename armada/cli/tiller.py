@@ -49,31 +49,29 @@ SHORT_DESC = "Command gets Tiller information."
 @tiller.command(name='tiller', help=DESC, short_help=SHORT_DESC)
 @click.option('--tiller-host', help="Tiller host IP.", default=None)
 @click.option(
-    '--tiller-port',
-    help="Tiller host port.",
-    type=int,
-    default=CONF.tiller_port)
+    '--tiller-port', help="Tiller host port.", type=int, default=None)
 @click.option(
     '--tiller-namespace',
     '-tn',
     help="Tiller namespace.",
     type=str,
-    default=CONF.tiller_namespace)
+    default=None)
 @click.option('--releases', help="List of deployed releases.", is_flag=True)
-@click.option('--status', help="Status of Armada services.", is_flag=True)
+@click.option('--status', help="Status of Tiller services.", is_flag=True)
+@click.option('--bearer-token', help="User bearer token.", default=None)
 @click.option('--debug', help="Enable debug logging.", is_flag=True)
 @click.pass_context
 def tiller_service(ctx, tiller_host, tiller_port, tiller_namespace, releases,
-                   status, debug):
+                   status, bearer_token, debug):
     CONF.debug = debug
     TillerServices(ctx, tiller_host, tiller_port, tiller_namespace, releases,
-                   status).safe_invoke()
+                   status, bearer_token).safe_invoke()
 
 
 class TillerServices(CliAction):
 
     def __init__(self, ctx, tiller_host, tiller_port, tiller_namespace,
-                 releases, status):
+                 releases, status, bearer_token):
         super(TillerServices, self).__init__()
         self.ctx = ctx
         self.tiller_host = tiller_host
@@ -81,13 +79,15 @@ class TillerServices(CliAction):
         self.tiller_namespace = tiller_namespace
         self.releases = releases
         self.status = status
+        self.bearer_token = bearer_token
 
     def invoke(self):
 
         with Tiller(
                 tiller_host=self.tiller_host,
                 tiller_port=self.tiller_port,
-                tiller_namespace=self.tiller_namespace) as tiller:
+                tiller_namespace=self.tiller_namespace,
+                bearer_token=self.bearer_token) as tiller:
 
             self.handle(tiller)
 

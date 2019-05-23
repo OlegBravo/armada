@@ -27,6 +27,8 @@ from armada.handlers.tiller import Tiller
 
 CONF = cfg.CONF
 
+HEALTH_PATH = 'health'
+
 
 class BaseResource(object):
 
@@ -86,13 +88,19 @@ class BaseResource(object):
         resp.status = status_code
 
     def log_error(self, ctx, level, msg):
-        extra = {'user': 'N/A', 'req_id': 'N/A', 'external_ctx': 'N/A'}
+        extra = {
+            'user': 'N/A',
+            'req_id': 'N/A',
+            'external_ctx': 'N/A',
+            'end_user': 'N/A',
+        }
 
         if ctx is not None:
             extra = {
                 'user': ctx.user,
                 'req_id': ctx.request_id,
                 'external_ctx': ctx.external_marker,
+                'end_user': ctx.end_user,
             }
 
         self.logger.log(level, msg, extra=extra)
@@ -110,17 +118,7 @@ class BaseResource(object):
         self.log_error(ctx, log.ERROR, msg)
 
     def get_tiller(self, req, resp):
-        dry_run = req.get_param_as_bool('dry_run')
-        tiller_port = req.get_param_as_int('tiller_port') or CONF.tiller_port
-        tiller_namespace = req.get_param(
-            'tiller_namespace',
-            default=CONF.tiller_namespace) or CONF.tiller_namespace
-
-        return Tiller(
-            tiller_host=req.get_param('tiller_host'),
-            tiller_port=tiller_port,
-            tiller_namespace=tiller_namespace,
-            dry_run=dry_run)
+        return Tiller(dry_run=req.get_param_as_bool('dry_run'))
 
 
 class ArmadaRequestContext(object):
@@ -137,6 +135,7 @@ class ArmadaRequestContext(object):
         self.authenticated = False
         self.request_id = str(uuid.uuid4())
         self.external_marker = ''
+        self.end_user = None  # Initial User
 
     def set_log_level(self, level):
         if level in ['error', 'info', 'debug']:
@@ -159,6 +158,9 @@ class ArmadaRequestContext(object):
 
     def set_external_marker(self, marker):
         self.external_marker = marker
+
+    def set_end_user(self, end_user):
+        self.end_user = end_user
 
     def to_policy_view(self):
         policy_dict = {}

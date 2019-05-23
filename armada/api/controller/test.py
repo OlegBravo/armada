@@ -21,8 +21,9 @@ from oslo_config import cfg
 from armada import api
 from armada.common import policy
 from armada import const
-from armada.handlers.test import test_release_for_success
+from armada.handlers.lock import lock_and_thread, LockException
 from armada.handlers.manifest import Manifest
+from armada.handlers.test import Test
 from armada.utils.release import release_prefixer
 from armada.utils import validate
 
@@ -36,31 +37,33 @@ class TestReleasesReleaseNameController(api.BaseResource):
 
     @policy.enforce('armada:test_release')
     def on_get(self, req, resp, release):
-        self.logger.info('RUNNING: %s', release)
-        with self.get_tiller(req, resp) as tiller:
+        try:
 
-            cleanup = req.get_param_as_bool('cleanup')
-            if cleanup is None:
-                cleanup = False
-            success = test_release_for_success(
-                tiller, release, cleanup=cleanup)
+            with self.get_tiller(req, resp) as tiller:
+                success = self.handle(req, release, tiller)
 
-        if success:
-            msg = {
-                'result': 'PASSED: {}'.format(release),
-                'message': 'MESSAGE: Test Pass'
-            }
-        else:
-            msg = {
-                'result': 'FAILED: {}'.format(release),
-                'message': 'MESSAGE: Test Fail'
-            }
+            if success:
+                msg = {
+                    'result': 'PASSED: {}'.format(release),
+                    'message': 'MESSAGE: Test Pass'
+                }
+            else:
+                msg = {
+                    'result': 'FAILED: {}'.format(release),
+                    'message': 'MESSAGE: Test Fail'
+                }
 
-        self.logger.info(msg)
+            resp.body = json.dumps(msg)
+            resp.status = falcon.HTTP_200
+            resp.content_type = 'application/json'
+        except LockException as e:
+            self.return_error(resp, falcon.HTTP_409, message=str(e))
 
-        resp.body = json.dumps(msg)
-        resp.status = falcon.HTTP_200
-        resp.content_type = 'application/json'
+    @lock_and_thread()
+    def handle(self, req, release, tiller):
+        cleanup = req.get_param_as_bool('cleanup')
+        test_handler = Test({}, release, tiller, cleanup=cleanup)
+        return test_handler.test_release_for_success()
 
 
 class TestReleasesManifestController(api.BaseResource):
@@ -107,9 +110,13 @@ class TestReleasesManifestController(api.BaseResource):
     @policy.enforce('armada:test_manifest')
     def on_post(self, req, resp):
         # TODO(fmontei): Validation Content-Type is application/x-yaml.
-        with self.get_tiller(req, resp) as tiller:
-            return self.handle(req, resp, tiller)
+        try:
+            with self.get_tiller(req, resp) as tiller:
+                return self.handle(req, resp, tiller)
+        except LockException as e:
+            self.return_error(resp, falcon.HTTP_409, message=str(e))
 
+    @lock_and_thread()
     def handle(self, req, resp, tiller):
         try:
             documents = self.req_yaml(req, default=[])
@@ -135,29 +142,28 @@ class TestReleasesManifestController(api.BaseResource):
                 const.KEYWORD_GROUPS):
             for ch in group.get(const.KEYWORD_CHARTS):
                 chart = ch['chart']
+
                 release_name = release_prefixer(prefix, chart.get('release'))
-                cleanup = req.get_param_as_bool('cleanup')
-                if cleanup is None:
-                    test_chart_override = chart.get('test', {})
-                    if isinstance(test_chart_override, bool):
-                        self.logger.warn(
-                            'Boolean value for chart `test` key is deprecated '
-                            'and will be removed. Use `test.enabled` instead.')
-                        # Use old default value.
-                        cleanup = True
-                    else:
-                        cleanup = test_chart_override.get('options', {}).get(
-                            'cleanup', False)
                 if release_name in known_releases:
-                    self.logger.info('RUNNING: %s tests', release_name)
-                    success = test_release_for_success(
-                        tiller, release_name, cleanup=cleanup)
-                    if success:
-                        self.logger.info("PASSED: %s", release_name)
-                        message['test']['passed'].append(release_name)
-                    else:
-                        self.logger.info("FAILED: %s", release_name)
-                        message['test']['failed'].append(release_name)
+                    cleanup = req.get_param_as_bool('cleanup')
+                    enable_all = req.get_param_as_bool('enable_all')
+                    cg_test_charts = group.get('test_charts')
+
+                    test_handler = Test(
+                        chart,
+                        release_name,
+                        tiller,
+                        cg_test_charts=cg_test_charts,
+                        cleanup=cleanup,
+                        enable_all=enable_all)
+
+                    if test_handler.test_enabled:
+                        success = test_handler.test_release_for_success()
+
+                        if success:
+                            message['test']['passed'].append(release_name)
+                        else:
+                            message['test']['failed'].append(release_name)
                 else:
                     self.logger.info('Release %s not found - SKIPPING',
                                      release_name)

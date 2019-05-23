@@ -22,6 +22,8 @@ HELM=${1}
 HELM_PIDFILE=${2}
 SERVE_DIR=$(mktemp -d)
 
+HTK_STABLE_COMMIT=${HTK_COMMIT:-"200b5e902b3a176fbfbe669b6a10a254c9b50f5d"}
+
 ${HELM} init --client-only
 
 if [[ -s ${HELM_PIDFILE} ]]; then
@@ -67,8 +69,9 @@ fi
 
 {
     cd "${SERVE_DIR}"
-    git clone --depth 1 https://git.openstack.org/openstack/openstack-helm-infra.git || true
+    git clone https://git.openstack.org/openstack/openstack-helm-infra.git || true
     cd openstack-helm-infra
+    git reset --hard "${HTK_STABLE_COMMIT}"
 
     make helm-toolkit
 }

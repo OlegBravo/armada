@@ -66,6 +66,8 @@ data:
           properties:
             enabled:
               type: boolean
+            timeout:
+              type: integer
             options:
               type: object
               properties:
@@ -126,6 +128,11 @@ data:
         - location
         - subpath
         - type
+    delete:
+      type: object
+      properties:
+        timeout:
+          type: integer
     install:
       # NOTE(sh8121att) Not clear that this key is actually used
       # in the code. Will leave it here for backward compatabilities

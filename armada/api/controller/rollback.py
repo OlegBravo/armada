@@ -19,6 +19,7 @@ from oslo_config import cfg
 
 from armada import api
 from armada.common import policy
+from armada.handlers.lock import lock_and_thread, LockException
 
 CONF = cfg.CONF
 
@@ -30,27 +31,31 @@ class Rollback(api.BaseResource):
     @policy.enforce('armada:rollback_release')
     def on_post(self, req, resp, release):
         try:
-            dry_run = req.get_param_as_bool('dry_run')
-
             with self.get_tiller(req, resp) as tiller:
-
-                tiller.rollback_release(
-                    release,
-                    req.get_param_as_int('version') or 0,
-                    wait=req.get_param_as_bool('wait'),
-                    timeout=req.get_param_as_int('timeout') or 0,
-                    force=req.get_param_as_bool('force'),
-                    recreate_pods=req.get_param_as_bool('recreate_pods'))
-
+                msg = self.handle(req, release, tiller)
                 resp.body = json.dumps({
-                    'message': ('(dry run) ' if dry_run else '') +
-                    'Rollback of {} complete.'.format(release),
+                    'message': msg,
                 })
-
-            resp.content_type = 'application/json'
-            resp.status = falcon.HTTP_200
+                resp.content_type = 'application/json'
+                resp.status = falcon.HTTP_200
+        except LockException as e:
+            self.return_error(resp, falcon.HTTP_409, message=str(e))
         except Exception as e:
             self.logger.exception('Caught unexpected exception')
             err_message = 'Failed to rollback release: {}'.format(e)
             self.error(req.context, err_message)
             self.return_error(resp, falcon.HTTP_500, message=err_message)
+
+    @lock_and_thread()
+    def handle(self, req, release, tiller):
+        dry_run = req.get_param_as_bool('dry_run')
+        tiller.rollback_release(
+            release,
+            req.get_param_as_int('version') or 0,
+            wait=req.get_param_as_bool('wait'),
+            timeout=req.get_param_as_int('timeout') or 0,
+            force=req.get_param_as_bool('force'),
+            recreate_pods=req.get_param_as_bool('recreate_pods'))
+
+        return ('(dry run) ' if dry_run else '') + \
+            'Rollback of {} complete.'.format(release)

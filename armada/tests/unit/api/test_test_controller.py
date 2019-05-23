@@ -26,6 +26,8 @@ from armada.tests import test_utils
 from armada.tests.unit.api import base
 
 
+@mock.patch.object(test.TestReleasesManifestController, 'handle',
+                   test.TestReleasesManifestController.handle.__wrapped__)
 class TestReleasesManifestControllerTest(base.BaseControllerTest):
 
     @mock.patch.object(test, 'Manifest')
@@ -57,9 +59,11 @@ class TestReleasesManifestControllerTest(base.BaseControllerTest):
         m_tiller.__exit__.assert_called()
 
 
+@mock.patch.object(test.TestReleasesReleaseNameController, 'handle',
+                   test.TestReleasesReleaseNameController.handle.__wrapped__)
 class TestReleasesReleaseNameControllerTest(base.BaseControllerTest):
 
-    @mock.patch.object(test, 'test_release_for_success')
+    @mock.patch.object(test.Test, 'test_release_for_success')
     @mock.patch.object(api, 'Tiller')
     def test_test_controller_test_pass(self, mock_tiller,
                                        mock_test_release_for_success):
@@ -73,14 +77,13 @@ class TestReleasesReleaseNameControllerTest(base.BaseControllerTest):
 
         release = 'fake-release'
         resp = self.app.simulate_get('/api/v1.0/test/{}'.format(release))
-        mock_test_release_for_success.assert_has_calls(
-            [mock.call(mock_tiller.return_value, release, cleanup=False)])
+        mock_test_release_for_success.assert_called_once()
         self.assertEqual(200, resp.status_code)
         self.assertEqual('MESSAGE: Test Pass',
                          json.loads(resp.text)['message'])
         m_tiller.__exit__.assert_called()
 
-    @mock.patch.object(test, 'test_release_for_success')
+    @mock.patch.object(test.Test, 'test_release_for_success')
     @mock.patch.object(api, 'Tiller')
     def test_test_controller_test_fail(self, mock_tiller,
                                        mock_test_release_for_success):
@@ -98,7 +101,7 @@ class TestReleasesReleaseNameControllerTest(base.BaseControllerTest):
                          json.loads(resp.text)['message'])
         m_tiller.__exit__.assert_called()
 
-    @mock.patch.object(test, 'test_release_for_success')
+    @mock.patch.object(test.Test, 'test_release_for_success')
     @mock.patch.object(api, 'Tiller')
     def test_test_controller_cleanup(self, mock_tiller,
                                      mock_test_release_for_success):
@@ -112,8 +115,7 @@ class TestReleasesReleaseNameControllerTest(base.BaseControllerTest):
         release = 'fake-release'
         resp = self.app.simulate_get(
             '/api/v1.0/test/{}'.format(release), query_string='cleanup=true')
-        mock_test_release_for_success.assert_has_calls(
-            [mock.call(m_tiller, release, cleanup=True)])
+        mock_test_release_for_success.assert_called_once()
         self.assertEqual(200, resp.status_code)
         self.assertEqual('MESSAGE: Test Pass',
                          json.loads(resp.text)['message'])
@@ -121,11 +123,13 @@ class TestReleasesReleaseNameControllerTest(base.BaseControllerTest):
 
 
 @test_utils.attr(type=['negative'])
+@mock.patch.object(test.TestReleasesManifestController, 'handle',
+                   test.TestReleasesManifestController.handle.__wrapped__)
 class TestReleasesManifestControllerNegativeTest(base.BaseControllerTest):
 
     @mock.patch.object(test, 'Manifest')
     @mock.patch.object(api, 'Tiller')
-    @mock.patch.object(test, 'test_release_for_success')
+    @mock.patch.object(test.Test, 'test_release_for_success')
     def test_test_controller_tiller_exc_returns_500(
             self, mock_test_release_for_success, mock_tiller, _):
         rules = {'armada:test_manifest': '@'}
@@ -227,7 +231,7 @@ class TestReleasesManifestControllerNegativeTest(base.BaseControllerTest):
 class TestReleasesReleaseNameControllerNegativeTest(base.BaseControllerTest):
 
     @mock.patch.object(api, 'Tiller')
-    @mock.patch.object(test, 'test_release_for_success')
+    @mock.patch.object(test.Test, 'test_release_for_success')
     def test_test_controller_tiller_exc_returns_500(
             self, mock_test_release_for_success, mock_tiller):
         rules = {'armada:test_release': '@'}
